@@ -1,0 +1,38 @@
+#!/bin/bash
+ip=`ip addr show ens33 | grep "ens33$" | awk '{print $2}' | awk -F/ '{print $1}'`
+yum -y install libxml2-devel libcurl-devel openssl-devel bzip2-devel
+tar zxf libmcrypt-2.5.7.tar.gz
+tar zxf php-5.6.27.tar.gz
+cd libmcrypt-2.5.7/
+./configure --prefix=/usr/local/libmcrypt && make && make install
+cd ../php-5.6.27
+./configure --prefix=/usr/local/php5.6 --with-mysql=mysqlnd --with-pdo-mysql=mysqlnd --with-mysqli=mysqlnd --with-openssl --enable-fpm --enable-sockets --enable-sysvshm --enable-mbstring --with-freetype-dir --with-jpeg-dir --with-png-dir --with-zlib --with-libxml-dir=/usr --enable-xml --with-mhash --with-mcrypt=/usr/local/libmcrypt --with-config-file-path=/etc --with-config-file-scan-dir=/etc/php.d --with-bz2 --enable-maintainer-zts && make && make install
+cp php.ini-production /etc/php.ini
+cp sapi/fpm/init.d.php-fpm /etc/init.d/php-fpm
+chmod +x /etc/init.d/php-fpm
+chkconfig --add php-fpm
+chkconfig php-fpm on
+cp /usr/local/php5.6/etc/php-fpm.conf.default /usr/local/php5.6/etc/php-fpm.conf
+sed -i "s/;pid/pid/" /usr/local/php5.6/etc/php-fpm.conf
+sed -i "s/127.0.0.1/${ip}/" /usr/local/php5.6/etc/php-fpm.conf
+sed -i "235c pm.max_children = 50" /usr/local/php5.6/etc/php-fpm.conf
+sed -i "240c pm.start_servers = 5" /usr/local/php5.6/etc/php-fpm.conf
+sed -i "245c pm.min_spare_servers = 5" /usr/local/php5.6/etc/php-fpm.conf
+sed -i "250c pm.max_spare_servers = 35" /usr/local/php5.6/etc/php-fpm.conf
+/etc/init.d/php-fpm start
+firewall-cmd --add-port=9000/tcp --permanent
+firewall-cmd --reload
+mkdir -p /var/www/benet
+cat > /var/www/benet/index.php << EOF
+<?php
+phpinfo();
+?>
+EOF
+cat > /var/www/benet/test.php << EOF
+<?php
+\$link=mysql_connect('${ip}','testuser','123456');
+if (\$link) echo "connection success .......";
+mysql_close();
+?>
+EOF
+/etc/init.d/php-fpm restart
