@@ -1,0 +1,241 @@
+#!/bin/bash
+mysqluser="testuser"
+userpwd="123456"
+ip=`ip addr show ens33 | grep "ens33$" | awk '{print $2}' | awk -F/ '{print $1}'`
+
+rpm -e mariadb-libs --nodeps
+
+yum -y install make apr* autoconf automake curl-devel gcc gcc-c++ openssl openssl-devel gd kernel keyutils patch perl kernel-headers compat* mpfr cpp glibc libgomp libstdc++-devel keyutils-libs-devel libcom_err-devel libsepol-devel libselinux-devel krb5-devel zlib-devel libXpm* freetype libjpeg* libpng* libtool* libxml2 libxml2-devel patch libcurl-devel bzip2-devel freetype-devel
+
+tar zxf cmake-3.5.1.tar.gz
+tar zxf boost_1_59_0.tar.gz 
+tar zxf bison-3.0.4.tar.gz 
+tar zxf ncurses-5.9.tar.gz 
+tar zxf mysql-5.7.23.tar.gz
+
+mv boost_1_59_0 /usr/local/boost
+
+cd cmake-3.5.1/
+./bootstrap && gmake && gmake install
+
+cd ../ncurses-5.9/
+./configure && make && make install
+
+cd ../bison-3.0.4/
+./configure && make && make install
+
+groupadd -r mysql && useradd -r -g mysql -s /bin/false -M mysql
+
+mkdir -p /usr/local/mysql/data
+
+cd ../mysql-5.7.23/
+cmake -DCMAKE_INSTALL_PREFIX=/usr/local/mysql -DMYSQL_DATADIR=/usr/local/mysql/data -DSYSCONFDIR=/etc -DDEFAULT_CHARSET=utf8 -DDEFAULT_COLLATION=utf8_general_ci -DEXTRA_CHARSETS=all -DMYSQL_UNIX_ADDR=/usr/local/mysql/mysql.sock -DWITH_MYISAM_STORAGE_ENGINE=1 -DWITH-INNOBASE_STORAGE_ENGINE=1 -DWITH_ARCHIVE_STORAGE_ENGINE=1 -DWITH_PARTITION_STORAGE_ENGINE=1 -DWITH_SYSTEMD=1 -DWITH_BOOST=/usr/local/boost && make -j $(grep processor /proc/cpuinfo | wc -l) && make install
+
+cat >> /etc/profile << EOF
+export PATH=/usr/local/mysql/bin:$PATH
+EOF
+source /etc/profile
+
+chown -R mysql:mysql /usr/local/mysql
+
+cat > /etc/my.cnf << EOF
+[mysqld]
+basedir=/usr/local/mysql/
+datadir=/usr/local/mysql/data/
+pid-file=/usr/local/mysql/data/mysqld.pid
+socket=/usr/local/mysql/mysql.sock
+log-error=/usr/local/mysql/data/mysqld.err
+server_id=1
+[client]
+socket=/usr/local/mysql/mysql.sock
+EOF
+
+mysqld --initialize --user=mysql --basedir=/usr/local/mysql/ --datadir=/usr/local/mysql/data/
+cp /usr/local/mysql/usr/lib/systemd/system/mysqld.service /usr/lib/systemd/system/
+systemctl enable mysqld.service
+mkdir /var/run/mysqld && chown -R mysql:mysql /var/run/mysqld
+systemctl daemon-reload
+systemctl start mysqld
+mypwd=`grep "password" /usr/local/mysql/data/mysqld.err | awk -F'root@localhost: ' '{print $2}'`
+mysql -u root -p${mypwd} -e "alter user root@localhost identified by '123'" --connect-expired-password
+mysql -uroot -p123 -e "grant all on *.* to ${mysqluser}@'%' identified by '${userpwd}'"
+mysql -uroot -p123 -e "flush privileges"
+
+echo "------------------FINSH--MYSQL-----------------"
+
+cd /root
+tar zxf zlib-1.2.8.tar.gz
+tar zxf pcre-8.39.tar.gz
+tar zxf nginx-1.14.2.tar.gz
+groupadd www && useradd -g www www -s /sbin/nologin
+cd nginx-1.14.2
+./configure --prefix=/usr/local/nginx --with-http_dav_module --with-http_stub_status_module --with-http_addition_module --with-http_sub_module --with-http_flv_module --with-http_mp4_module --with-pcre=/root/pcre-8.39 --with-zlib=/root/zlib-1.2.8 --with-http_ssl_module --with-http_gzip_static_module --user=www --group=www && make && make install
+ln -s /usr/local/nginx/sbin/nginx /usr/local/sbin/
+nginx
+firewall-cmd --add-port=80/tcp --permanent
+firewall-cmd --reload
+
+echo "------------------FINSH--NGINX-----------------"
+
+
+cd /root
+tar zxf libmcrypt-2.5.7.tar.gz
+tar zxf php-5.6.27.tar.gz
+cd libmcrypt-2.5.7
+./configure && make && make install
+ln -s /usr/local/mysql/lib/libmysqlclient.so.20.3.0 /usr/local/mysql/lib/libmysqlclient_r.so
+ 
+cd ../php-5.6.27
+./configure --prefix=/usr/local/php5.6 --with-config-file-path=/etc --with-mysql=/usr/local/mysql --with-mysqli=/usr/local/mysql/bin/mysql_config --with-mysql-sock=/usr/local/mysql/mysql.sock --with-gd --with-iconv --with-libxml-dir=/usr --with-mhash --with-mcrypt --with-config-file-scan-dir=/etc/php.d --with-bz2 --with-zlib --with-freetype-dir --with-png-dir --with-jpeg-dir --enable-xml --enable-bcmath --enable-shmop --enable-sysvsem --enable-inline-optimization --enable-mbregex --enable-fpm --enable-mbstring --enable-ftp --enable-gd-native-ttf --with-openssl --enable-pcntl --enable-sockets --with-xmlrpc --enable-zip --enable-soap --without-pear --with-gettext --enable-session --with-mcrypt --with-curl && make && make install
+
+cp php.ini-production /etc/php.ini
+sed -i "936c date.timezone = PRC" /etc/php.ini
+sed -i "363c expose_php = Off" /etc/php.ini
+sed -i "202c short_open_tag = On" /etc/php.ini
+sed -i "660c post_max_size = 16M" /etc/php.ini
+sed -i "372c max_execution_time = 300" /etc/php.ini
+sed -i "382c max_input_time = 300" /etc/php.ini
+sed -i "702c always_populate_raw_post_data = -1" /etc/php.ini
+sed -i "1789c mbstring.func_overload = 0" /etc/php.ini
+
+cp sapi/fpm/init.d.php-fpm /etc/init.d/php-fpm
+chmod +x /etc/init.d/php-fpm 
+chkconfig --add php-fpm
+chkconfig php-fpm on
+
+cp /usr/local/php5.6/etc/php-fpm.conf.default /usr/local/php5.6/etc/php-fpm.conf
+sed -i "s/;pid/pid/" /usr/local/php5.6/etc/php-fpm.conf
+sed -i "149c user = www" /usr/local/php5.6/etc/php-fpm.conf
+sed -i "150c group = www" /usr/local/php5.6/etc/php-fpm.conf
+sed -i "s/127.0.0.1/${ip}/" /usr/local/php5.6/etc/php-fpm.conf
+sed -i "235c pm.max_children = 300" /usr/local/php5.6/etc/php-fpm.conf
+sed -i "240c pm.start_servers = 10" /usr/local/php5.6/etc/php-fpm.conf
+sed -i "245c pm.min_spare_servers = 10" /usr/local/php5.6/etc/php-fpm.conf
+sed -i "250c pm.max_spare_servers = 50" /usr/local/php5.6/etc/php-fpm.conf
+
+systemctl start php-fpm
+
+cat > /usr/local/nginx/conf/nginx.conf << EOF
+user www www;
+worker_processes 1;
+#error_log logs/error.log;
+#error_log logs/error.log notice;
+#error_log logs/error.log info;
+#pid logs/nginx.pid;
+events {
+use epoll;
+worker_connections 1024;
+}
+http {
+include mime.types;
+default_type application/octet-stream;
+#log_format main '$remote_addr - \$remote_user [\$time_local] "\$request" '
+# '\$status \$body_bytes_sent "\$http_referer" '
+# '"\$http_user_agent" "\$http_x_forwarded_for"';
+#access_log logs/access.log main;
+sendfile on;
+#tcp_nopush on;
+#keepalive_timeout 0;
+keepalive_timeout 65;
+#gzip on;
+server {
+listen 80;
+server_name localhost;
+charset utf-8;
+#access_log logs/host.access.log main;
+location / {
+root html;
+index index.php index.html index.htm;
+}
+location ~ \.php$ {
+root html;
+fastcgi_pass ${ip}:9000;
+fastcgi_index index.php;
+include fastcgi.conf;
+}
+# error_page 404 /404.html;
+# redirect server error pages to the static page /50x.html
+#
+error_page 500 502 503 504 /50x.html;
+location = /50x.html {
+root html;
+}
+location /status {
+stub_status on;
+}
+}
+}
+EOF
+
+nginx -t 
+nginx -s reload 
+
+cat > /usr/local/nginx/html/index.php << EOF
+<?php
+phpinfo();
+?>
+EOF
+cat > /usr/local/nginx/html/test.php << EOF
+<?php
+\$link=mysql_connect('${ip}','${mysqluser}','${userpwd}');
+if (\$link) echo "connection success .......";
+mysql_close();
+?>
+EOF
+
+echo "------------------FINSH--PHP-----------------"
+
+cd /root
+groupadd zabbix && useradd -g zabbix zabbix
+yum -y install net-snmp net-snmp-devel curl-devel java-1.8.0-openjdk java-1.8.0-openjdk-devel OpenIPMI-devel libssh2-devel
+tar zxf fping-3.12.tar.gz 
+tar zxf zabbix-3.2.1.tar.gz
+
+cd fping-3.12/
+./configure && make && make install
+chown root:zabbix /usr/local/sbin/fping
+chmod 4710 /usr/local/sbin/fping
+cd ../zabbix-3.2.1/
+./configure --prefix=/usr/local/zabbix --enable-server --enable-agent --enable-java --with-mysql=/usr/local/mysql/bin/mysql_config --with-net-snmp --with-libcurl --with-openipmi && make && make install
+ln -s /usr/local/zabbix/bin/* /usr/local/bin/
+ln -s /usr/local/zabbix/sbin/* /usr/local/sbin/
+
+mysql -uroot -p123 -e "create database zabbix character set utf8"
+mysql -uroot -p123 -e "grant all privileges on zabbix.* to 'zabbix'@'localhost' identified by 'zabbix'"
+cd database/mysql/
+mysql -uzabbix -pzabbix -hlocalhost zabbix < schema.sql
+mysql -uzabbix -pzabbix -hlocalhost zabbix < images.sql
+mysql -uzabbix -pzabbix -hlocalhost zabbix < data.sql
+
+sed -i "38c LogFile=/usr/local/zabbix/logs/zabbix_server.log" /usr/local/zabbix/etc/zabbix_server.conf
+sed -i "68c PidFile=/usr/local/zabbix/logs/zabbix_server.pid" /usr/local/zabbix/etc/zabbix_server.conf
+sed -i "s/# DBHost/DBHost/g" /usr/local/zabbix/etc/zabbix_server.conf
+sed -i "111c DBPassword=zabbix" /usr/local/zabbix/etc/zabbix_server.conf
+sed -i "s/# DBPort/DBPort/g" /usr/local/zabbix/etc/zabbix_server.conf
+sed -i "463c FpingLocation=/usr/local/sbin/fping" /usr/local/zabbix/etc/zabbix_server.conf
+mkdir -p /usr/local/zabbix/logs && chown -R zabbix:zabbix /usr/local/zabbix/
+sed -i "1a /usr/local/mysql/lib\n/usr/local/lib" /etc/ld.so.conf
+ldconfig
+/usr/local/zabbix/sbin/zabbix_server -c /usr/local/zabbix/etc/zabbix_server.conf
+
+cp /root/zabbix-3.2.1/misc/init.d/fedora/core/zabbix_server /etc/rc.d/init.d/zabbix_server
+cp /root/zabbix-3.2.1/misc/init.d/fedora/core/zabbix_agentd /etc/rc.d/init.d/zabbix_agentd
+chmod +x /etc/rc.d/init.d/zabbix_server 
+chmod +x /etc/rc.d/init.d/zabbix_agentd
+chkconfig --add zabbix_server
+chkconfig --add zabbix_agentd
+chkconfig zabbix_server on
+chkconfig zabbix_agentd on
+sed -i "s/BASEDIR=\/usr\/local/BASEDIR=\/usr\/local\/zabbix/g" /etc/rc.d/init.d/zabbix_server
+sed -i "s/PIDFILE=\/tmp\/\$BINARY_NAME.pid/PIDFILE=\/usr\/local\/zabbix\/logs\/\$BINARY_NAME.pid/g" /etc/rc.d/init.d/zabbix_server
+sed -i "s/BASEDIR=\/usr\/local/BASEDIR=\/usr\/local\/zabbix/g" /etc/rc.d/init.d/zabbix_agentd
+sed -i "s/PIDFILE=\/tmp\/\$BINARY_NAME.pid/PIDFILE=\/usr\/local\/zabbix\/logs\/\$BINARY_NAME.pid/g" /etc/rc.d/init.d/zabbix_agentd
+systemctl daemon-reload
+/etc/init.d/zabbix_server stop
+/etc/init.d/zabbix_server start
+firewall-cmd --add-port=10051/tcp --permanent 
+firewall-cmd --reload
+cp -r /root/zabbix-3.2.1/frontends/php/ /usr/local/nginx/html/zabbix
+chown -R www:www /usr/local/nginx/html/zabbix/
+
+echo "------------------ZABBIX-----------------"
