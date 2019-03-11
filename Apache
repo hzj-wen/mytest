@@ -1,0 +1,31 @@
+#!/bin/bash
+tar zxf apr-util-1.5.4.tar.gz
+tar zxf apr-1.5.2.tar.gz
+tar zxf httpd-2.4.23.tar.gz
+tar zxf zlib-1.2.8.tar.gz
+tar zxf openssl-1.0.1u.tar.gz
+tar zxf pcre-8.39.tar.gz
+cd apr-1.5.2
+./configure --prefix=/usr/local/apr && make && make install
+cd ../apr-util-1.5.4
+./configure --prefix=/usr/local/apr-util --with-apr=/usr/local/apr/ && make && make install
+cd ../pcre-8.39
+./configure --prefix=/usr/local/pcre && make && make install
+cd ../zlib-1.2.8
+./configure --prefix=/usr/local/zlib && make && make install
+cd ../openssl-1.0.1u
+./config -fPIC --prefix=/usr/local/openssl enable-shared && make && make install
+mv /usr/bin/openssl /usr/bin/openssl.1.0.1e
+ln -s /usr/local/openssl/bin/openssl /usr/bin/openssl
+cd ../httpd-2.4.23
+./configure --prefix=/usr/local/http --enable-so --enable-cgi --enable-cgid --enable-ssl --with-ssl=/usr/local/openssl --enable-rewrite --with-pcre=/usr/local/pcre/ --with-z=/usr/local/zlib/ --with-apr=/usr/local/apr --with-apr-util=/usr/local/apr-util/ --enable-modules=most --enable-mods-shared=most --enable-mpms-shared=all --with-mpm=event --enable-proxy --enable-proxy-fcgi --enable-expires --enable-deflate && make && make install
+ln -s /usr/local/http/bin/* /usr/local/bin/
+sed -i '200c ServerName www.benet.com:80' /usr/local/http/conf/httpd.conf
+/usr/local/http/bin/apachectl start
+cp /usr/local/http/bin/apachectl /etc/init.d/httpd
+sed -i '1 a #chkconfig: 35 85 15\n#description: apache 2.4.23' /etc/init.d/httpd
+chkconfig --add httpd
+chkconfig httpd on
+systemctl restart httpd
+firewall-cmd --permanent --add-port=80/tcp
+firewall-cmd --reload
