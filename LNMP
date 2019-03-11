@@ -1,0 +1,210 @@
+#!/bin/bash
+mysqluser="testuser"
+userpwd="123456"
+ip=`ip addr show ens33 | grep "ens33$" | awk '{print $2}' | awk -F/ '{print $1}'`
+
+yum -y install libxml2-devel libcurl-devel openssl-devel bzip2-devel
+
+rpm -e --nodeps mariadb-libs
+tar zxf mysql-5.7.22-linux-glibc2.12-x86_64.tar.gz 
+mv mysql-5.7.22-linux-glibc2.12-x86_64 /usr/local/mysql
+mkdir /usr/local/mysql/data
+groupadd -r mysql && useradd -r -g mysql -s /sbin/false -M mysql
+chown -R mysql:mysql /usr/local/mysql
+ln -s /usr/local/mysql/bin/* /usr/local/bin
+cat << EOF > /etc/my.cnf
+[mysqld]
+basedir=/usr/local/mysql/
+datadir=/usr/local/mysql/data/
+pid-file=/usr/local/mysql/data/mysqld.pid
+socket=/usr/local/mysql/mysql.sock
+log-error=/usr/local/mysql/data/mysqld.err
+server_id=1
+[client]
+socket=/usr/local/mysql/mysql.sock
+EOF
+mysqld --initialize --user=mysql --basedir=/usr/local/mysql/ --datadir=/usr/local/mysql/data/
+mypwd=`grep "password" /usr/local/mysql/data/mysqld.err | awk -F'root@localhost: ' '{print $2}'`
+cp /usr/local/mysql/support-files/mysql.server /etc/init.d/mysqld
+/etc/init.d/mysqld start
+mysql -u root -p${mypwd} -e "alter user root@localhost identified by '123'" --connect-expired-password
+mysql -uroot -p123 -e "grant all on *.* to ${mysqluser}@'%' identified by '${userpwd}'"
+mysql -uroot -p123 -e "flush privileges"
+firewall-cmd --add-port=3306/tcp --permanent
+firewall-cmd --reload
+
+echo "------------------FINSH--MYSQL-----------------"
+
+cd /root
+tar zxf zlib-1.2.8.tar.gz
+tar zxf pcre-8.39.tar.gz
+tar zxf nginx-1.14.2.tar.gz
+groupadd www && useradd -g www www -s /sbin/nologin
+cd nginx-1.14.2
+./configure --prefix=/usr/local/nginx --with-http_dav_module --with-http_stub_status_module --with-http_addition_module --with-http_sub_module --with-http_flv_module --with-http_mp4_module --with-pcre=/root/pcre-8.39 --with-zlib=/root/zlib-1.2.8 --with-http_ssl_module --with-http_gzip_static_module --user=www --group=www && make && make install
+ln -s /usr/local/nginx/sbin/nginx /usr/local/sbin/
+nginx -t
+nginx
+firewall-cmd --add-port=80/tcp --permanent
+firewall-cmd --reload
+
+echo "------------------FINSH--NGINX-----------------"
+
+cd /root
+tar zxf libmcrypt-2.5.7.tar.gz
+tar zxf php-5.6.27.tar.gz
+cd libmcrypt-2.5.7
+./configure && make && make install
+ln -s /usr/local/mysql/lib/libmysqlclient.so.20.3.0 /usr/local/mysql/lib/libmysqlclient_r.so
+ 
+cd ../php-5.6.27
+./configure  --prefix=/usr/local/php5.6  --with-mysql=mysqlnd --with-pdo-mysql=mysqlnd --with-mysqli=mysqlnd --with-openssl --enable-fpm --enable-sockets --enable-sysvshm --enable-mbstring --with-freetype-dir --with-jpeg-dir --with-png-dir --with-zlib --with-libxml-dir=/usr --enable-xml --with-mhash --with-mcrypt=/usr/local/libmcrypt --with-config-file-path=/etc --with-config-file-scan-dir=/etc/php.d  --with-bz2 --enable-maintainer-zts && make && make install
+
+cp php.ini-production /etc/php.ini
+cp sapi/fpm/init.d.php-fpm /etc/init.d/php-fpm
+chmod +x /etc/init.d/php-fpm 
+chkconfig --add php-fpm
+chkconfig php-fpm on
+
+cp /usr/local/php5.6/etc/php-fpm.conf.default /usr/local/php5.6/etc/php-fpm.conf
+sed -i "s/;pid/pid/" /usr/local/php5.6/etc/php-fpm.conf
+sed -i "149c user = www" /usr/local/php5.6/etc/php-fpm.conf
+sed -i "150c group = www" /usr/local/php5.6/etc/php-fpm.conf
+sed -i "s/127.0.0.1/${ip}/" /usr/local/php5.6/etc/php-fpm.conf
+sed -i "235c pm.max_children = 50" /usr/local/php5.6/etc/php-fpm.conf
+sed -i "240c pm.start_servers = 5" /usr/local/php5.6/etc/php-fpm.conf
+sed -i "245c pm.min_spare_servers = 5" /usr/local/php5.6/etc/php-fpm.conf
+sed -i "250c pm.max_spare_servers = 35" /usr/local/php5.6/etc/php-fpm.conf
+
+systemctl start php-fpm
+firewall-cmd --add-port=9000/tcp --permanent
+firewall-cmd --reload
+
+cat > /usr/local/nginx/conf/nginx.conf << EOF
+user www www;
+worker_processes 2;
+#worker_cpu_affinity 0001 0010 0100 1000;
+error_log logs/error.log;
+#error_log logs/error.log notice;
+#error_log logs/error.log info;
+pid logs/nginx.pid;
+events {
+use epoll;
+worker_connections 65535;
+multi_accept on;
+}
+http {
+include mime.types;
+default_type application/octet-stream;
+#log_format main '\$remote_addr - \$remote_user [\$time_local] "\$request" '
+# '\$status \$body_bytes_sent "\$http_referer" '
+# '"\$http_user_agent" "\$http_x_forwarded_for"';
+#access_log logs/access.log main;
+sendfile on;
+tcp_nopush on;
+keepalive_timeout 65;
+tcp_nodelay on;
+client_header_buffer_size 4k;
+open_file_cache max=102400 inactive=20s;
+open_file_cache_valid 30s;
+open_file_cache_min_uses 1;
+client_header_timeout 15;
+client_body_timeout 15;
+reset_timedout_connection on;
+send_timeout 15;
+server_tokens off;
+client_max_body_size 10m;
+fastcgi_connect_timeout 600;
+fastcgi_send_timeout 600;
+fastcgi_read_timeout 600;
+fastcgi_buffer_size 64k;
+fastcgi_buffers 4 64k;
+fastcgi_busy_buffers_size 128k;
+fastcgi_temp_file_write_size 128k;
+fastcgi_temp_path /usr/local/nginx/nginx_tmp;
+fastcgi_intercept_errors on;
+fastcgi_cache_path  /usr/local/nginx/fastcgi_cache  levels=1:2  keys_zone=cache_fastcgi:128m inactive=1d max_size=10g;
+gzip on;
+gzip_min_length 2k;
+gzip_buffers 4 32k;
+gzip_http_version 1.1;
+gzip_comp_level 6;
+gzip_types text/plain text/css text/javascript application/json  application/javascript  application/x-javascript application/xml;
+gzip_vary on;
+gzip_proxied any;
+server {
+listen 80;
+server_name ${ip};
+#charset koi8-r;
+#access_log logs/host.access.log main;
+location ~* ^.+\.(jpg|gif|png|swf|flv|wma|wmv|asf|mp3|mmf|zip|rar)$ {
+valid_referers none blocked ${ip};
+if (\$invalid_referer) {
+#return 302 http://${ip}/img/nolink.jpg;
+return 404;
+break;
+}
+access_log off;
+}
+location / {
+root html;
+index index.php index.html index.htm;
+}
+location ~* \.(ico|jpe?g|gif|png|bmp|swf|flv)$ {
+expires 30d;
+#log_not_found off;
+access_log off;
+}
+location ~* \.(js|css)$ {
+expires 7d;
+log_not_found off;
+access_log off;
+}
+location = /(favicon.ico|roboots.txt) {
+access_log off;
+log_not_found off;
+}
+location /status {
+stub_status on;
+}
+location ~ .*\.(php|php5)?$ {
+root html;
+fastcgi_pass ${ip}:9000;
+fastcgi_index index.php;
+include fastcgi.conf;
+fastcgi_cache cache_fastcgi;
+fastcgi_cache_valid 200 302 1h;
+fastcgi_cache_valid 301 1d;
+fastcgi_cache_valid any 1m;
+fastcgi_cache_min_uses 1;
+fastcgi_cache_use_stale error timeout invalid_header http_500;
+fastcgi_cache_key http://$host$request_uri;
+}
+#error_page 404 /404.html;
+# redirect server error pages to the static page /50x.html
+#
+error_page 500 502 503 504 /50x.html;
+location = /50x.html {
+root html;
+}
+}
+}
+EOF
+
+nginx -t 
+nginx -s reload 
+
+cat > /usr/local/nginx/html/index.php << EOF
+<?php
+phpinfo();
+?>
+EOF
+cat > /usr/local/nginx/html/test.php << EOF
+<?php
+\$link=mysql_connect('${ip}','${mysqluser}','${userpwd}');
+if (\$link) echo "connection success .......";
+mysql_close();
+?>
+EOF
+
+echo "------------------FINSH--PHP-----------------"
