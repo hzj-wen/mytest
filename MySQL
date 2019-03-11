@@ -1,0 +1,26 @@
+#!/bin/bash
+rpm -e --nodeps mariadb-libs
+tar zxf mysql-5.7.22-linux-glibc2.12-x86_64.tar.gz 
+mv mysql-5.7.22-linux-glibc2.12-x86_64 /usr/local/mysql
+mkdir /usr/local/mysql/data
+groupadd -r mysql && useradd -r -g mysql -s /sbin/false -M mysql
+chown -R mysql:mysql /usr/local/mysql
+ln -s /usr/local/mysql/bin/* /usr/local/bin
+cat << EOF > /etc/my.cnf
+[mysqld]
+basedir=/usr/local/mysql/
+datadir=/usr/local/mysql/data/
+pid-file=/usr/local/mysql/data/mysqld.pid
+socket=/usr/local/mysql/mysql.sock
+log-error=/usr/local/mysql/data/mysqld.err
+server_id=1
+[client]
+socket=/usr/local/mysql/mysql.sock
+EOF
+mysqld --initialize --user=mysql --basedir=/usr/local/mysql/ --datadir=/usr/local/mysql/data/
+mypwd=`grep "password" /usr/local/mysql/data/mysqld.err | awk -F'root@localhost: ' '{print $2}'`
+cp /usr/local/mysql/support-files/mysql.server /etc/init.d/mysqld
+/etc/init.d/mysqld start
+mysql -u root -p${mypwd} -e "alter user root@localhost identified by '123'" --connect-expired-password
+firewall-cmd --add-port=3306/tcp --permanent
+firewall-cmd --reload
